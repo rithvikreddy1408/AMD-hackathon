@@ -1,0 +1,51 @@
+scenario_id: scenario_03
+name: "Inventory DB Network Partition"
+description: >
+  Network partition isolates the inventory database, triggering inventory
+  service errors, checkout retry storms, and payments overload from
+  retry-amplified traffic.
+speed: 1.0
+
+services:
+  - inventory
+  - checkout
+  - payments
+  - auth
+  - notifications
+
+ground_truth:
+  root_cause_service: inventory
+  causal_chain:
+    - service: inventory
+      event: "network partition isolates primary DB replica, query error rate 0% -> 91%"
+    - service: checkout
+      event: "aggressive retry-on-error policy triggers retry storm, request volume 3x -> 14x baseline"
+    - service: payments
+      event: "retry-amplified traffic overloads payment auth endpoint, latency and error rate spike"
+  explanation: >
+    A network partition (simulated top-of-rack switch failure) isolated the
+    inventory service's primary DB replica from the app tier. Inventory query
+    errors spiked to 91%. Checkout's retry-on-error policy had no backoff cap,
+    so failed stock checks were retried aggressively, amplifying total request
+    volume 14x baseline. That amplified volume hit the payments service's
+    shared auth-check endpoint, overloading it and causing unrelated-looking
+    payment latency spikes that were actually a downstream symptom of the
+    inventory partition.
+
+logs:
+  - {service: inventory,     t: 0,  level: INFO,  message: "DB replica primary-1 healthy, query latency 8ms"}
+  - {service: checkout,      t: 1,  level: INFO,  message: "order ord_2201 stock check ok"}
+  - {service: inventory,     t: 4,  level: ERROR, message: "DB replica primary-1 connection timeout, network unreachable"}
+  - {service: checkout,      t: 5,  level: WARN,  message: "stock check failed for ord_2202, retrying (attempt 1)"}
+  - {service: inventory,     t: 6,  level: ERROR, message: "DB replica primary-1 still unreachable, error rate 34%"}
+  - {service: checkout,      t: 7,  level: WARN,  message: "stock check failed for ord_2202, retrying (attempt 2)"}
+  - {service: checkout,      t: 8,  level: WARN,  message: "stock check failed for ord_2203, retrying (attempt 1)"}
+  - {service: inventory,     t: 9,  level: ERROR, message: "DB replica primary-1 unreachable, error rate 67%, no failover configured"}
+  - {service: checkout,      t: 10, level: ERROR, message: "retry volume 14x baseline, retry storm detected"}
+  - {service: payments,      t: 12, level: WARN,  message: "auth-check endpoint latency rising, 40ms -> 620ms"}
+  - {service: inventory,     t: 13, level: ERROR, message: "DB replica primary-1 unreachable, error rate 91%"}
+  - {service: payments,      t: 15, level: ERROR, message: "auth-check endpoint overloaded, latency 2400ms, error rate 22%"}
+  - {service: checkout,      t: 17, level: ERROR, message: "orders ord_2202-ord_2240 stalled, retry storm ongoing"}
+  - {service: auth,          t: 19, level: INFO,  message: "token issuance nominal, no anomalies on auth side"}
+  - {service: payments,      t: 21, level: ERROR, message: "auth-check endpoint error rate 38%, unrelated-looking payment failures reported"}
+  - {service: notifications, t: 24, level: WARN,  message: "elevated failure notifications queued for 38 orders"}

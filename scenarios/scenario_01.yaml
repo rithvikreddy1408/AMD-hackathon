@@ -1,0 +1,51 @@
+scenario_id: scenario_01
+name: "Checkout Latency Cascade"
+description: >
+  Payments DB connection pool exhausted under load spike, causing checkout
+  queue backup and downstream notification timeouts.
+speed: 1.0
+
+services:
+  - auth
+  - payments
+  - checkout
+  - inventory
+  - notifications
+
+ground_truth:
+  root_cause_service: payments
+  causal_chain:
+    - service: payments
+      event: "DB connection pool exhausted (50/50 in use), query latency 20ms -> 4200ms"
+    - service: checkout
+      event: "order queue backs up waiting on payment confirmations, depth 5 -> 850"
+    - service: notifications
+      event: "downstream timeout waiting on checkout completion events, 30s timeout hit repeatedly"
+  explanation: >
+    Connection pool sized for 50 concurrent queries; a flash-sale traffic spike
+    pushed concurrent payment requests to ~400. Pool exhaustion serialized
+    queries, spiking payments latency 200x. Checkout blocked on payment
+    confirms, queue depth exploded. Notifications timed out waiting on
+    checkout completion events it never received in time.
+
+logs:
+  - {service: auth,          t: 0,  level: INFO,  message: "token validated for session sess_8821"}
+  - {service: payments,      t: 0,  level: INFO,  message: "connection pool: 12/50 in use"}
+  - {service: checkout,      t: 1,  level: INFO,  message: "order ord_4471 queued, depth=5"}
+  - {service: auth,          t: 2,  level: INFO,  message: "token validated for session sess_8822"}
+  - {service: payments,      t: 4,  level: INFO,  message: "connection pool: 22/50 in use"}
+  - {service: checkout,      t: 5,  level: INFO,  message: "order ord_4472 queued, depth=6"}
+  - {service: payments,      t: 8,  level: WARN,  message: "connection pool: 41/50 in use, latency rising to 380ms"}
+  - {service: checkout,      t: 9,  level: INFO,  message: "order ord_4473 queued, depth=9"}
+  - {service: payments,      t: 12, level: WARN,  message: "connection pool: 48/50 in use, queueing new requests"}
+  - {service: checkout,      t: 13, level: WARN,  message: "payment confirm delayed for ord_4471, depth=41"}
+  - {service: payments,      t: 15, level: ERROR, message: "connection pool: 50/50 in use, request queueing, latency 2100ms"}
+  - {service: checkout,      t: 16, level: WARN,  message: "payment confirm delayed for ord_4472, depth=133"}
+  - {service: notifications, t: 18, level: WARN,  message: "waiting on checkout.completed event for ord_4471, 12s elapsed"}
+  - {service: payments,      t: 20, level: ERROR, message: "connection pool exhausted, latency 4200ms, dropping oldest queued queries"}
+  - {service: checkout,      t: 22, level: ERROR, message: "queue depth=850, payment confirm timeout threshold breached for 40 orders"}
+  - {service: notifications, t: 25, level: ERROR, message: "timeout waiting on checkout.completed for ord_4471 after 30s"}
+  - {service: inventory,     t: 26, level: INFO,  message: "stock levels nominal, no anomalies detected"}
+  - {service: notifications, t: 30, level: ERROR, message: "timeout waiting on checkout.completed for ord_4472 after 30s"}
+  - {service: checkout,      t: 33, level: ERROR, message: "queue depth=850, no drain, payment service unresponsive"}
+  - {service: payments,      t: 35, level: ERROR, message: "connection pool still exhausted, 210 queries backlogged"}

@@ -1,0 +1,50 @@
+scenario_id: scenario_02
+name: "Auth Token Cache Poisoning"
+description: >
+  Auth service cache bug serves stale/invalid tokens after a deploy, causing
+  cascading rejections in inventory and silent failures in checkout.
+speed: 1.0
+
+services:
+  - auth
+  - inventory
+  - checkout
+  - payments
+  - notifications
+
+ground_truth:
+  root_cause_service: auth
+  causal_chain:
+    - service: auth
+      event: "post-deploy cache TTL bug serves expired tokens as valid, stale token rate climbs 0% -> 62%"
+    - service: inventory
+      event: "rejects requests carrying stale tokens with 401s, reject rate climbs 0% -> 58%"
+    - service: checkout
+      event: "silently retries rejected inventory checks with same stale token, orders stall without user-visible error"
+  explanation: >
+    A deploy at t=0 shipped a cache TTL regression in the auth service: expired
+    tokens were not evicted and continued to validate as active. Downstream,
+    inventory correctly rejected these stale tokens with 401s once its own
+    stricter validation kicked in. Checkout's retry logic reused the same
+    stale token on retry, so orders silently stalled instead of surfacing an
+    auth error to the user.
+
+logs:
+  - {service: auth,          t: 0,  level: INFO,  message: "deploy complete: auth-service v2.14.0"}
+  - {service: checkout,      t: 1,  level: INFO,  message: "order ord_9001 started"}
+  - {service: auth,          t: 3,  level: INFO,  message: "token issued for session sess_1103, ttl=900s"}
+  - {service: inventory,     t: 5,  level: INFO,  message: "stock check ok for ord_9001"}
+  - {service: auth,          t: 8,  level: WARN,  message: "cache eviction skipped for token tok_5541 (past ttl), served as valid"}
+  - {service: checkout,      t: 10, level: INFO,  message: "order ord_9002 started"}
+  - {service: inventory,     t: 12, level: WARN,  message: "401 rejected stock check for ord_9002, stale token tok_5541"}
+  - {service: checkout,      t: 13, level: INFO,  message: "retrying stock check for ord_9002 (attempt 2)"}
+  - {service: auth,          t: 15, level: WARN,  message: "cache eviction skipped for token tok_5544 (past ttl), served as valid"}
+  - {service: inventory,     t: 17, level: WARN,  message: "401 rejected stock check for ord_9002, stale token tok_5541"}
+  - {service: checkout,      t: 18, level: WARN,  message: "order ord_9002 stalled, retry limit not yet reached, no error surfaced"}
+  - {service: auth,          t: 20, level: ERROR, message: "stale token rate 34%, cache TTL eviction job not firing"}
+  - {service: checkout,      t: 22, level: INFO,  message: "order ord_9003 started"}
+  - {service: inventory,     t: 24, level: ERROR, message: "401 reject rate climbing: 58% of stock checks in last 60s"}
+  - {service: checkout,      t: 26, level: WARN,  message: "order ord_9003 stalled, retry limit not yet reached, no error surfaced"}
+  - {service: auth,          t: 28, level: ERROR, message: "stale token rate 62%, cache TTL eviction job confirmed dead"}
+  - {service: payments,      t: 30, level: INFO,  message: "no incoming payment requests for ord_9002/ord_9003, orders never reached payment stage"}
+  - {service: notifications, t: 32, level: INFO,  message: "no completion events emitted, no notifications sent for stalled orders"}
