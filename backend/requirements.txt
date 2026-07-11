@@ -6,3 +6,10 @@ sentence-transformers
 python-dotenv
 pyyaml
 requests
+sqlmodel
+alembic
+psycopg2-binary
+python-jose[cryptography]
+passlib[bcrypt]
+celery
+gunicorn

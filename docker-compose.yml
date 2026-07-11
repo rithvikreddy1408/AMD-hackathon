@@ -1,0 +1,90 @@
+
+services:
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-incident_mesh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-incident_mesh_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-incident_mesh}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-incident_mesh}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend API (Gunicorn + Uvicorn) ───────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-incident_mesh}:${POSTGRES_PASSWORD:-incident_mesh_secret}@postgres:5432/${POSTGRES_DB:-incident_mesh}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Celery Worker ──────────────────────────────────────────────────────────
+  celery_worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: >
+      celery -A backend.worker.celery_app worker
+      --loglevel=info
+      --concurrency=2
+      -Q celery
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-incident_mesh}:${POSTGRES_PASSWORD:-incident_mesh_secret}@postgres:5432/${POSTGRES_DB:-incident_mesh}
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # ── Frontend (Nginx + React Build) ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+        VITE_WS_URL: ""
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  redis_data:
